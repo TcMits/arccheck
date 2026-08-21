@@ -1,4 +1,4 @@
-# disk_health_check.sh
+# disk_health_check.sh + push_health_to_proxmox.sh
 
 Health-scores physical disks sitting behind an **Adaptec 6805T** (or other
 `aacraid`-based) RAID controller, combining two independent data sources:
@@ -30,6 +30,7 @@ script pulls both together into one 0–100 score per drive.
 chmod +x disk_health_check.sh
 sudo ./disk_health_check.sh          # normal output
 sudo ./disk_health_check.sh -v       # verbose: explains every note in plain English
+sudo ./disk_health_check.sh -m       # markdown output, no ANSI colors (for Proxmox Notes, wikis, etc.)
 sudo ./disk_health_check.sh -h       # help
 ```
 
@@ -78,6 +79,43 @@ DRIVES=(
   `Online`/`Ready`, it's treated as more urgent than any SMART reading,
   since it reflects whether the disk is actually in service right now
 
+## Proxmox integration
+
+`push_health_to_proxmox.sh` runs `disk_health_check.sh --markdown` and
+pushes the result straight into the node's **Notes** field via `pvesh`
+(Proxmox's built-in API CLI). That field renders as markdown right on
+the node's **Summary** page in the web UI — no extra services, ports,
+or Grafana/InfluxDB stack required.
+
+```bash
+mkdir -p /opt/scripts
+cp disk_health_check.sh push_health_to_proxmox.sh /opt/scripts/
+chmod +x /opt/scripts/*.sh
+
+# test it once
+/opt/scripts/push_health_to_proxmox.sh
+```
+
+Then check **Datacenter → your node → Summary** in the web UI.
+
+Schedule it to refresh automatically:
+```bash
+crontab -e
+```
+```
+0 6 * * * /opt/scripts/push_health_to_proxmox.sh >> /var/log/disk_health_push.log 2>&1
+```
+
+**Under the hood:** `pvesh set /nodes/<node>/config --description "..."`
+writes directly to the same REST API endpoint the web UI itself uses
+(`/nodes/{node}/config`) — the `description` field there is exactly
+what the Notes widget displays. You can inspect it any time with
+`pvesh get /nodes/$(hostname)/config`.
+
+**Heads up:** each run *overwrites* the node's existing Notes field.
+If you use Notes for other info, either move it elsewhere or ask for
+an append-below-a-marker version instead of a full overwrite.
+
 ## Score bands and recommended action
 
 | Score | Label | What to do |
@@ -102,6 +140,7 @@ DRIVES=(
 
 ## Example output
 
+**Normal (`-v` for verbose explanations):**
 ```
 Controller / Array Status (arcconf)
   Controller Status:    Optimal
@@ -119,4 +158,22 @@ Disk0-Samsung870EVO  (/dev/sda aacraid,0,0,0)
   Notes:
     - Retired flash blocks: 4
     - Wear leveling / life remaining: 99
+```
+
+**Markdown (`-m`), as it renders on the Proxmox node Summary page:**
+```
+### Disk0-Samsung870EVO
+_(/dev/sda aacraid,0,0,0)_
+
+| Field | Value |
+|---|---|
+| Model | Samsung SSD 870 EVO 500GB |
+| Power-on hours | 1300 |
+| Controller State | Online |
+| **Score** | 🟢 **96/100 — Excellent** |
+| What to do | No action needed. Keep running this check on a regular schedule (e.g. weekly). |
+
+**Notes:**
+- Retired flash blocks: 4
+- Wear leveling / life remaining: 99
 ```
